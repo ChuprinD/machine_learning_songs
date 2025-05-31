@@ -1,14 +1,18 @@
 import pandas as pd
 import seaborn as sns
+import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import r2_score
 import statsmodels.api as sm
+from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import classification_report, ConfusionMatrixDisplay
+from sklearn.linear_model import LinearRegression
+from scipy.stats import ttest_ind
 
 #Insights from data exploration
 def exploration(df):
+    print("===================================================================================")
     print("DATA EXPLORATION")
     print("Data sample:")
     print(df[0:5])
@@ -84,10 +88,12 @@ def exploration(df):
     plt.savefig("correlation_matrix.png")
     plt.show()
 
-    input("Data exploration complete.\nPress Enter to continue...")
+    input("Data exploration complete.\nPress Enter to continue...\n"+
+        "===================================================================================")
 
 #Preprocessing steps
-def preprocessing_for_multiple_linear_regression(df, model):
+def preprocessing(df, model):
+    print("\n===================================================================================")
     #Remove duplicates 
     df = df.drop_duplicates(subset=['artist', 'song', 'year'], keep='first')
 
@@ -121,6 +127,8 @@ def preprocessing_for_multiple_linear_regression(df, model):
                         'speechiness', 'acousticness', 'liveness', 'valence', 'tempo', 
                         'explicit', 'key', 'mode', 'year']
     elif model == "KNN":
+        df["popularity_class"] = pd.qcut(df["popularity"], q=3, labels=["low", "medium", "high"])
+        df = df.drop("popularity", axis=1)
         numeric_cols = ['duration_sec', 'danceability', 'energy', 'loudness', 
                         'speechiness', 'acousticness', 'liveness', 'valence', 'tempo', 
                         'explicit', 'key', 'mode', 'year']
@@ -130,7 +138,7 @@ def preprocessing_for_multiple_linear_regression(df, model):
     #Save preprocessed data
     df.to_csv("songs_preprocessed.csv", index=False)
 
-    print("Data after preprocessing:")
+    print("Data after preprocessing for " + model + ":")
 
     print("Data sample:")
     print(df[0:5])
@@ -141,12 +149,14 @@ def preprocessing_for_multiple_linear_regression(df, model):
 
     print("\nNumber of samples: "+str(df.shape[0]))
 
-    input("Preprocessing complete.\nPress Enter to continue...")
+    input("Preprocessing for complete.\nPress Enter to continue...\n" +
+        "===================================================================================\n")
 
     return df
 
 #Multiple linear regression
 def perform_multiple_linear_regression(df):
+    print("\n===================================================================================")
     X = df.drop(columns=["popularity"])
     Y = df["popularity"]
 
@@ -157,6 +167,9 @@ def perform_multiple_linear_regression(df):
     X_train, X_test, Y_train, Y_test = train_test_split(X_const, Y, test_size=0.2, random_state=42)
 
     # Train model
+    model = LinearRegression()
+    scores = cross_val_score(model, X, Y, cv=5, scoring="r2")
+
     model = sm.OLS(Y_train, X_train).fit()
 
     # Predict
@@ -180,9 +193,83 @@ def perform_multiple_linear_regression(df):
     plt.tight_layout()
     plt.savefig("residuals_plot.png")
 
+    coefs = model.params.drop("const").sort_values(key=abs, ascending=False)
+    print("Top coefficients (OLS):\n", coefs.head(5))
+
+    input("Multiple linear regression complete.\nPress Enter to continue...\n"+
+        "===================================================================================\n")
+    
+    return scores
+
+#KNN
+def perform_knn(df):
+    print("\n===================================================================================")
+    X = df.drop(columns=["popularity_class"])
+    Y = df["popularity_class"]
+
+    # Divide data into train and test
+    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
+
+    param_grid = {"n_neighbors": list(range(1, 21))}
+    grid = GridSearchCV(KNeighborsClassifier(), param_grid, cv=5, scoring="f1_macro")
+    grid.fit(X, Y)
+    best_k = grid.best_params_["n_neighbors"]
+    print(f"Best k from GridSearchCV: {best_k}")
+
+    # Train model
+    model = KNeighborsClassifier(n_neighbors=best_k)
+    scores = cross_val_score(model, X, Y, cv=5, scoring="f1_macro")
+    model.fit(X_train, Y_train)
+
+    # Predict
+    Y_pred = model.predict(X_test)
+    print(classification_report(Y_test, Y_pred))
+
+    # Plot confusion matrix
+    disp = ConfusionMatrixDisplay.from_predictions(Y_test, Y_pred, cmap="Blues")
+    plt.title("KNN Confusion Matrix (popularity classes)")
+    plt.tight_layout()
+    plt.savefig("knn_confusion_matrix.png")
+
+    input("KNN complete.\nPress Enter to continue...\n"+
+    "===================================================================================\n")
+
+    return scores
+
+#Compare models
+def compare_models(mlr_scores, knn_scores):
+    print("\n===================================================================================")
+    print("MODEL COMPARISON (t-test)")
+    t_stat, p_value = ttest_ind(mlr_scores, knn_scores, equal_var=False)
+    print(f"t-statistic = {t_stat:.4f}, p-value = {p_value:.4f}")
+    if p_value < 0.05:
+        print("The difference between models is statistically significant.")
+    else:
+        print("No significant difference between models.")
+
+    mlr_mean = np.mean(mlr_scores)
+    knn_mean = np.mean(knn_scores)
+    print(f"\nAverage CV score (MLR): {mlr_mean:.4f}")
+    print(f"Average CV score (KNN): {knn_mean:.4f}")
+
+    if knn_mean > mlr_mean:
+        print("KNN performs better on average.")
+    elif mlr_mean > knn_mean:
+        print("MLR performs better on average.")
+    else:
+        print("Both models perform equally on average.")
+
+    input("Model comparison complete.\nPress Enter to continue...\n"+
+    "===================================================================================\n")
+
 if __name__ == "__main__":
     df = pd.read_csv("songs_normalize.csv")
     exploration(df)
-    df_for_MLR = preprocessing_for_multiple_linear_regression(df)
-    perform_multiple_linear_regression(df_for_MLR)
-    
+
+    df_for_MLR = preprocessing(df, "MLR")
+    mlr_scores = perform_multiple_linear_regression(df_for_MLR)
+
+    df_for_KNN = preprocessing(df, "KNN")
+    knn_scores = perform_knn(df_for_KNN)
+
+    compare_models(mlr_scores, knn_scores)
